@@ -79,16 +79,41 @@ class Critic(Middleware):
     name = "critic"
 
     def after_agent(self, ctx, report):
-        # TODO (§2): khoảng 10-25 dòng.
-        #  1. Lấy report["claims"]; nếu rỗng hoặc không phải list thì thôi.
-        #  2. Với mỗi claim: nếu claim["text"] có trong ctx.observed_text
-        #     -> giữ nguyên (KHÔNG sửa chữ).
-        #  3. Nếu không: thử tách câu ghép (trường hợp (c) ở docstring).
-        #     Tách được -> giữ cả hai nửa, mỗi nửa gắn doc_id của tài liệu
-        #     thật sự chứa nó, và đặt report["abstain"] = True.
-        #  4. Không tách được -> đây là bịa: bỏ claim đi.
-        #  5. Nếu không còn claim nào: report["abstain"] = True,
-        #     claims = [], citations = [], và viết lại "answer" nói rõ là
-        #     không đủ căn cứ.
-        #  6. Cập nhật report["citations"] cho khớp với claims còn lại.
-        return report  # <- mặc định KHÔNG LÀM GÌ: agent vẫn chạy được
+        if not isinstance(report, dict):
+            return report
+        claims = report.get("claims")
+        if not isinstance(claims, list):
+            return report
+
+        valid_claims = []
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            text = claim.get("text", "")
+            if text in ctx.observed_text:
+                valid_claims.append(claim)
+            elif " và " in text:
+                left, right = text.split(" và ", 1)
+                doc_left = None
+                doc_right = None
+                if ctx.corpus:
+                    for doc in ctx.corpus.docs:
+                        if doc.body in ctx.observed_text:
+                            if not doc_left and any(line == left for line in doc.body.splitlines()):
+                                doc_left = doc.doc_id
+                            if not doc_right and any(line == right for line in doc.body.splitlines()):
+                                doc_right = doc.doc_id
+                if doc_left and doc_right and doc_left != doc_right and left in ctx.observed_text and right in ctx.observed_text:
+                    valid_claims.append({"doc_id": doc_left, "text": left})
+                    valid_claims.append({"doc_id": doc_right, "text": right})
+                    report["abstain"] = True
+
+        if not valid_claims:
+            report["abstain"] = True
+            report["claims"] = []
+            report["citations"] = []
+            report["answer"] = "Không đủ dữ liệu và bằng chứng đáng tin cậy để trả lời câu hỏi."
+        else:
+            report["claims"] = valid_claims
+            report["citations"] = sorted(list(set(c["doc_id"] for c in valid_claims if c.get("doc_id"))))
+        return report
